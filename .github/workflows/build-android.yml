@@ -1,0 +1,176 @@
+name: Build Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_code:
+        description: "Google Play version code (must increase for every upload)"
+        required: true
+        default: "1"
+      version_name:
+        description: "Human-readable version name shown in Play Console"
+        required: true
+        default: "0.1.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GODOT_VERSION: "4.7.2-stable"
+      GODOT_BIN: "Godot_v4.7.2-stable_linux.x86_64"
+      TEMPLATE_DIR: "4.7.2.stable"
+      PRESET_NAME: "Android Hallways"
+      AAB_PATH: "build/Hallways.aab"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate version inputs
+        env:
+          VERSION_CODE: ${{ inputs.version_code }}
+          VERSION_NAME: ${{ inputs.version_name }}
+        run: |
+          if ! [[ "$VERSION_CODE" =~ ^[0-9]+$ ]] || [ "$VERSION_CODE" -lt 1 ]; then
+            echo "::error::version_code must be a positive integer."
+            exit 1
+          fi
+          if ! [[ "$VERSION_NAME" =~ ^[0-9A-Za-z._-]+$ ]]; then
+            echo "::error::version_name may only contain letters, numbers, dots, underscores, and hyphens."
+            exit 1
+          fi
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.1.0" \
+            "ndk;29.0.14206865" \
+            "cmake;3.10.2.4988404"
+
+      - name: Cache Godot export templates
+        id: cache-templates
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/godot/export_templates/4.7.2.stable
+          key: godot-templates-4.7.2-stable
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-godot-4.7.2-${{ hashFiles('.github/godot/export_presets.ci.cfg') }}
+          restore-keys: |
+            gradle-godot-4.7.2-
+
+      - name: Install Godot
+        run: |
+          wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/${GODOT_BIN}.zip"
+          unzip -q "${GODOT_BIN}.zip"
+          sudo mv "${GODOT_BIN}" /usr/local/bin/godot
+          sudo chmod +x /usr/local/bin/godot
+          godot --version
+
+      - name: Install Godot export templates
+        if: steps.cache-templates.outputs.cache-hit != 'true'
+        run: |
+          wget -q "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_export_templates.tpz"
+          mkdir -p ~/.local/share/godot/export_templates/${TEMPLATE_DIR}
+          unzip -q "Godot_v${GODOT_VERSION}_export_templates.tpz"
+          mv templates/* ~/.local/share/godot/export_templates/${TEMPLATE_DIR}/
+
+      - name: Configure Godot editor settings
+        run: |
+          SDK_PATH="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/godot"
+          mkdir -p "$CONFIG_DIR"
+          cat > "$CONFIG_DIR/editor_settings-4.7.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          resource_local_to_scene = false
+          resource_name = ""
+          export/android/android_sdk_path = "${SDK_PATH}"
+          export/android/java_sdk_path = "${JAVA_HOME}"
+          export/android/debug_keystore = "${RUNNER_TEMP}/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
+          keytool -genkeypair -v \
+            -keystore "$RUNNER_TEMP/debug.keystore" \
+            -storepass android \
+            -alias androiddebugkey \
+            -keypass android \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -dname "CN=Android Debug,OU=Android,O=Android,L=Android,ST=Android,C=US"
+
+      - name: Prepare CI export preset
+        env:
+          VERSION_CODE: ${{ inputs.version_code }}
+          VERSION_NAME: ${{ inputs.version_name }}
+        run: |
+          cp .github/godot/export_presets.ci.cfg export_presets.cfg
+          sed -i -E "s|^version/code=.*|version/code=${VERSION_CODE}|" export_presets.cfg
+          sed -i -E "s|^version/name=.*|version/name=\"${VERSION_NAME}\"|" export_presets.cfg
+
+      - name: Decode and validate upload keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::Missing one or more ANDROID_KEYSTORE_* secrets. Add them under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_B64" | base64 --decode > "$RUNNER_TEMP/upload.keystore"
+          keytool -list -v \
+            -keystore "$RUNNER_TEMP/upload.keystore" \
+            -storepass "$KEYSTORE_PASSWORD" \
+            -alias "$KEY_ALIAS" > /dev/null
+          echo "Upload keystore decoded and alias '$KEY_ALIAS' verified."
+
+      - name: Import project resources
+        run: |
+          godot --headless --path . --import || true
+
+      - name: Export signed AAB
+        env:
+          GODOT_ANDROID_KEYSTORE_RELEASE_PATH: ${{ runner.temp }}/upload.keystore
+          GODOT_ANDROID_KEYSTORE_RELEASE_USER: ${{ secrets.ANDROID_KEY_ALIAS }}
+          GODOT_ANDROID_KEYSTORE_RELEASE_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          mkdir -p build
+          godot --headless --path . --verbose \
+            --install-android-build-template \
+            --export-release "$PRESET_NAME" "$AAB_PATH"
+          test -s "$AAB_PATH" || { echo "::error::AAB was not produced."; exit 1; }
+          ls -lh "$AAB_PATH"
+
+      - name: Verify AAB signature
+        run: |
+          jarsigner -verify "$AAB_PATH" > /dev/null
+          echo "AAB signature verified."
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hallways-aab-${{ inputs.version_code }}
+          path: build/Hallways.aab
+          if-no-files-found: error
+          retention-days: 30
