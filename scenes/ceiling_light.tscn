@@ -1,0 +1,36 @@
+[gd_scene load_steps=5 format=3]
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_housing"]
+top_radius = 0.55
+bottom_radius = 0.55
+height = 0.08
+radial_segments = 24
+
+[sub_resource type="StandardMaterial3D" id="Material_housing"]
+albedo_color = Color(0.26, 0.24, 0.21, 1)
+roughness = 0.9
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_panel"]
+top_radius = 0.45
+bottom_radius = 0.45
+height = 0.04
+radial_segments = 24
+
+[sub_resource type="StandardMaterial3D" id="Material_panel"]
+albedo_color = Color(1, 0.96, 0.84, 1)
+emission_enabled = true
+emission = Color(1, 0.9, 0.7, 1)
+emission_energy_multiplier = 2.0
+
+[node name="CeilingLight" type="Node3D"]
+
+[node name="Housing" type="MeshInstance3D" parent="."]
+mesh = SubResource("CylinderMesh_housing")
+material_override = SubResource("Material_housing")
+cast_shadow = 0
+
+[node name="Panel" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.06, 0)
+mesh = SubResource("CylinderMesh_panel")
+material_override = SubResource("Material_panel")
+cast_shadow = 0

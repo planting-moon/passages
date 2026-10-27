@@ -1,0 +1,19 @@
+.godot/
+.DS_Store
+Thumbs.db
+export_presets.cfg
+
+# Build artifacts
+*.apk
+*.aab
+*.idsig
+*.pck
+*.tpz
+build/
+
+# Signing material
+*.keystore
+*.jks
+*.p12
+*.pem
+*.key
