@@ -5,6 +5,23 @@ const WALL_HEIGHT := 2.6
 const PLAYER_SCENE := preload("res://scenes/player.tscn")
 const JOYSTICK_SCENE := preload("res://scenes/joystick.tscn")
 const CEILING_LIGHT_SCENE := preload("res://scenes/ceiling_light.tscn")
+const WALLPAPER_SHADER := preload("res://shaders/wallpaper.gdshader")
+const BASEBOARD_HEIGHT := 0.14
+const BASEBOARD_DEPTH := 0.025
+const TOP_TRIM_HEIGHT := 0.05
+const TOP_TRIM_DEPTH := 0.012
+
+# One wallpaper per floor, cycled. Pattern ids match shaders/wallpaper.gdshader.
+const WALLPAPERS := [
+	{"name": "pinstripe", "pattern": 1, "scale": 5.0, "width": 0.07},
+	{"name": "dots", "pattern": 2, "scale": 5.0, "width": 0.07},
+	{"name": "lattice", "pattern": 3, "scale": 2.2, "width": 0.025},
+	{"name": "chevron", "pattern": 5, "scale": 3.0, "width": 0.045},
+	{"name": "scallop", "pattern": 7, "scale": 3.0, "width": 0.035},
+	{"name": "plus", "pattern": 6, "scale": 4.0, "width": 0.05},
+	{"name": "ticking", "pattern": 8, "scale": 2.5, "width": 0.06},
+	{"name": "grid", "pattern": 4, "scale": 2.0, "width": 0.02},
+]
 
 var LEVELS := [
 	{
@@ -162,7 +179,7 @@ var won := false
 var current_level := 0
 var current_layout: Array = []
 var current_theme: Dictionary = {}
-var wall_material: StandardMaterial3D
+var wall_material: ShaderMaterial
 var level_width := 0
 var level_height := 0
 var start_cell := Vector2i.ZERO
@@ -171,7 +188,12 @@ var goal_cell := Vector2i.ZERO
 func _ready() -> void:
 	get_tree().paused = false
 	build_extra_levels()
-	current_level = clampi(int(Engine.get_meta("passages_level", 0)), 0, LEVELS.size() - 1)
+	var start_level := int(Engine.get_meta("passages_level", 0))
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--level="):
+			start_level = int(arg.trim_prefix("--level=")) - 1
+			Engine.set_meta("passages_level", start_level)
+	current_level = clampi(start_level, 0, LEVELS.size() - 1)
 	current_theme = LEVELS[current_level]
 	apply_lighting()
 	if current_theme.has("maze"):
@@ -277,21 +299,28 @@ func setup_viewport() -> void:
 	game_layer.layer = 0
 	add_child(game_layer)
 	world = SubViewport.new()
-	world.size = Vector2i(480, 854)
 	world.own_world_3d = true
 	world.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	world.msaa_3d = Viewport.MSAA_DISABLED
+	world.msaa_3d = Viewport.MSAA_4X
 	world.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
 	world.use_taa = false
 	add_child(world)
+	resize_world()
+	get_tree().root.size_changed.connect(resize_world)
 	var screen := TextureRect.new()
 	screen.texture = world.get_texture()
 	screen.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	screen.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-	screen.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	screen.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	screen.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	game_layer.add_child(screen)
 	screen.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+func resize_world() -> void:
+	# Render at the device's real pixel size (or the design size, whichever is larger).
+	var window := DisplayServer.window_get_size()
+	var design := get_viewport().get_visible_rect().size
+	world.size = Vector2i(maxi(window.x, int(design.x)), maxi(window.y, int(design.y)))
 
 func apply_lighting() -> void:
 	var t := float(current_level) / float(LEVELS.size() - 1)
@@ -309,7 +338,11 @@ func setup_environment() -> void:
 	environment.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	environment.ambient_light_color = current_theme["ambient"]
 	environment.ambient_light_energy = current_theme["ambient_energy"]
-	environment.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	environment.tonemap_mode = Environment.TONE_MAPPER_AGX
+	environment.glow_enabled = true
+	environment.glow_intensity = 0.5
+	environment.glow_bloom = 0.0
+	environment.glow_hdr_threshold = 1.0
 	environment.fog_enabled = true
 	environment.fog_light_color = current_theme["fog"]
 	environment.fog_density = current_theme["fog_density"]
@@ -426,22 +459,21 @@ func add_rooms(grid: Array, count: int, exit_tile: Vector2i) -> void:
 		placed += 1
 
 func build_level() -> void:
-	wall_material = StandardMaterial3D.new()
-	wall_material.albedo_color = current_theme["wall"]
-	wall_material.roughness = 0.85
-	var floor_material := StandardMaterial3D.new()
-	floor_material.albedo_color = current_theme["floor"]
-	floor_material.roughness = 0.95
-	var ceiling_material := StandardMaterial3D.new()
-	ceiling_material.albedo_color = current_theme["ceiling"]
-	ceiling_material.roughness = 1.0
+	var wallpaper: Dictionary = WALLPAPERS[current_level % WALLPAPERS.size()]
+	var wall_color: Color = current_theme["wall"]
+	wall_material = make_paper_material(wall_color, wall_color.darkened(0.12), int(wallpaper["pattern"]), float(wallpaper["scale"]), float(wallpaper["width"]), 0.85)
+	var trim_material := StandardMaterial3D.new()
+	trim_material.albedo_color = wall_color.lerp(Color(0.97, 0.96, 0.93), 0.55)
+	trim_material.roughness = 0.45
+	var floor_color: Color = current_theme["floor"]
+	var floor_material := make_paper_material(floor_color, floor_color.darkened(0.18), 4, 1.0 / 0.75, 0.015, 0.9)
+	var ceiling_color: Color = current_theme["ceiling"]
+	var ceiling_material := make_paper_material(ceiling_color, ceiling_color, 0, 1.0, 0.0, 1.0)
 	var span_x := level_width * CELL_SIZE
 	var span_z := level_height * CELL_SIZE
 	add_box(Vector3(0, -0.1, 0), Vector3(span_x, 0.2, span_z), floor_material)
 	add_box(Vector3(0, WALL_HEIGHT + 0.1, 0), Vector3(span_x, 0.2, span_z), ceiling_material)
-	var wall_mesh := BoxMesh.new()
-	wall_mesh.size = Vector3(CELL_SIZE, WALL_HEIGHT, CELL_SIZE)
-	wall_mesh.material = wall_material
+	var wall_mesh := build_wall_mesh(wall_material, trim_material)
 	var wall_shape := BoxShape3D.new()
 	wall_shape.size = Vector3(CELL_SIZE, WALL_HEIGHT, CELL_SIZE)
 	var library := MeshLibrary.new()
@@ -469,6 +501,42 @@ func build_level() -> void:
 					start_cell = Vector2i(x, y)
 				elif tile == "E":
 					goal_cell = Vector2i(x, y)
+
+func make_paper_material(paper: Color, ink: Color, pattern: int, pattern_scale: float, line_width: float, roughness: float) -> ShaderMaterial:
+	var material := ShaderMaterial.new()
+	material.shader = WALLPAPER_SHADER
+	material.set_shader_parameter("paper_color", paper)
+	material.set_shader_parameter("ink_color", ink)
+	material.set_shader_parameter("pattern", pattern)
+	material.set_shader_parameter("pattern_scale", pattern_scale)
+	material.set_shader_parameter("line_width", line_width)
+	material.set_shader_parameter("roughness_value", roughness)
+	return material
+
+# Wall block with a baseboard and a slim top trim. GridMap centers items, so the
+# mesh spans -WALL_HEIGHT/2..WALL_HEIGHT/2 vertically.
+func build_wall_mesh(paper_material: Material, trim_material: Material) -> ArrayMesh:
+	var half_height := WALL_HEIGHT * 0.5
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, box_arrays(Vector3(CELL_SIZE, WALL_HEIGHT, CELL_SIZE), Vector3.ZERO))
+	mesh.surface_set_material(0, paper_material)
+	var base_size := Vector3(CELL_SIZE + BASEBOARD_DEPTH * 2.0, BASEBOARD_HEIGHT, CELL_SIZE + BASEBOARD_DEPTH * 2.0)
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, box_arrays(base_size, Vector3(0, -half_height + BASEBOARD_HEIGHT * 0.5, 0)))
+	mesh.surface_set_material(1, trim_material)
+	var top_size := Vector3(CELL_SIZE + TOP_TRIM_DEPTH * 2.0, TOP_TRIM_HEIGHT, CELL_SIZE + TOP_TRIM_DEPTH * 2.0)
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, box_arrays(top_size, Vector3(0, half_height - TOP_TRIM_HEIGHT * 0.5, 0)))
+	mesh.surface_set_material(2, trim_material)
+	return mesh
+
+func box_arrays(size: Vector3, offset: Vector3) -> Array:
+	var box := BoxMesh.new()
+	box.size = size
+	var arrays := box.get_mesh_arrays()
+	var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	for i in range(vertices.size()):
+		vertices[i] += offset
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	return arrays
 
 func add_box(position: Vector3, size: Vector3, material: Material) -> void:
 	var body := StaticBody3D.new()
