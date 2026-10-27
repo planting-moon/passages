@@ -944,18 +944,28 @@ func _on_chalk_pressed() -> void:
 	var from := camera.global_position
 	var to := from - camera.global_transform.basis.z * 3.2
 	var query := PhysicsRayQueryParameters3D.create(from, to, 0xFFFFFFFF, [player.get_rid()])
-	var hit := world.find_world_3d().direct_space_state.intersect_ray(query)
+	var space := world.find_world_3d().direct_space_state
+	var hit := space.intersect_ray(query)
 	if hit.is_empty():
-		return
+		# No wall within reach: mark the floor just ahead instead.
+		var forward := -player.global_transform.basis.z
+		forward.y = 0.0
+		var ahead := player.global_position + forward.normalized() * 2.8
+		var down := PhysicsRayQueryParameters3D.create(ahead + Vector3.UP, ahead + Vector3.DOWN, 0xFFFFFFFF, [player.get_rid()])
+		hit = space.intersect_ray(down)
+		if hit.is_empty():
+			return
 	var hit_position: Vector3 = hit["position"]
 	var hit_normal: Vector3 = hit["normal"]
 	add_chalk_mark(hit_position, hit_normal)
 
 func add_chalk_mark(hit_position: Vector3, normal: Vector3) -> void:
 	var marker := Node3D.new()
-	marker.position = hit_position + normal * 0.04
+	marker.position = hit_position + normal * 0.015
 	world.add_child(marker)
-	marker.look_at(hit_position, Vector3.UP)
+	# On the floor, line the X up with the player's heading instead of world up.
+	var up := Vector3.UP if absf(normal.y) < 0.9 else -player.global_transform.basis.z
+	marker.look_at(hit_position, up)
 	var material := StandardMaterial3D.new()
 	material.albedo_color = Color(0.95, 0.95, 0.88)
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
