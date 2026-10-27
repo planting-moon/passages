@@ -102,7 +102,7 @@ jobs:
         if: steps.cache-symbols.outputs.cache-hit != 'true'
         run: |
           wget -q -O native-debug-symbols-full.zip \
-            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_native_debug_symbols.${TEMPLATE_DIR}.android.zip"
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_native_debug_symbols.${TEMPLATE_DIR}.template_release.android.zip"
           rm -rf native-debug-symbols
           unzip -q native-debug-symbols-full.zip "arm64-v8a/*" -d native-debug-symbols
           mkdir -p build
