@@ -6,6 +6,10 @@ const PLAYER_SCENE := preload("res://scenes/player.tscn")
 const JOYSTICK_SCENE := preload("res://scenes/joystick.tscn")
 const CEILING_LIGHT_SCENE := preload("res://scenes/ceiling_light.tscn")
 const WALLPAPER_SHADER := preload("res://shaders/wallpaper.gdshader")
+const CARPET_SHADER := preload("res://shaders/carpet.gdshader")
+const CHALK_ICON := preload("res://assets/chalk.svg")
+# Share of the corridor width covered by the carpet border, on each side.
+const CARPET_BORDER_RATIO := 0.1
 const BASEBOARD_HEIGHT := 0.14
 const BASEBOARD_DEPTH := 0.025
 const TOP_TRIM_HEIGHT := 0.05
@@ -466,7 +470,7 @@ func build_level() -> void:
 	trim_material.albedo_color = wall_color.lerp(Color(0.97, 0.96, 0.93), 0.55)
 	trim_material.roughness = 0.45
 	var floor_color: Color = current_theme["floor"]
-	var floor_material := make_paper_material(floor_color, floor_color.darkened(0.18), 4, 1.0 / 0.75, 0.015, 0.9)
+	var floor_material := make_carpet_material(floor_color, floor_color.lerp(wall_color.darkened(0.55), 0.9))
 	var ceiling_color: Color = current_theme["ceiling"]
 	var ceiling_material := make_paper_material(ceiling_color, ceiling_color, 0, 1.0, 0.0, 1.0)
 	var span_x := level_width * CELL_SIZE
@@ -511,6 +515,23 @@ func make_paper_material(paper: Color, ink: Color, pattern: int, pattern_scale: 
 	material.set_shader_parameter("pattern_scale", pattern_scale)
 	material.set_shader_parameter("line_width", line_width)
 	material.set_shader_parameter("roughness_value", roughness)
+	return material
+
+func make_carpet_material(field: Color, border: Color) -> ShaderMaterial:
+	var maze_image := Image.create(level_width, level_height, false, Image.FORMAT_L8)
+	for y in range(level_height):
+		var row: String = current_layout[y]
+		for x in range(level_width):
+			maze_image.set_pixel(x, y, Color.WHITE if row.substr(x, 1) == "#" else Color.BLACK)
+	var material := ShaderMaterial.new()
+	material.shader = CARPET_SHADER
+	material.set_shader_parameter("maze_map", ImageTexture.create_from_image(maze_image))
+	material.set_shader_parameter("maze_size", Vector2(level_width, level_height))
+	material.set_shader_parameter("maze_origin", Vector2(-level_width * CELL_SIZE * 0.5, -level_height * CELL_SIZE * 0.5))
+	material.set_shader_parameter("cell_size", CELL_SIZE)
+	material.set_shader_parameter("border_width", CELL_SIZE * CARPET_BORDER_RATIO)
+	material.set_shader_parameter("field_color", field)
+	material.set_shader_parameter("border_color", border)
 	return material
 
 # Wall block with a baseboard and a slim top trim. GridMap centers items, so the
@@ -636,16 +657,26 @@ func build_ui() -> void:
 	menu_button.pressed.connect(open_menu)
 	canvas.add_child(menu_button)
 	chalk_button = Button.new()
-	chalk_button.text = "Chalk"
+	chalk_button.icon = CHALK_ICON
+	chalk_button.expand_icon = true
+	chalk_button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	chalk_button.tooltip_text = "Chalk"
 	chalk_button.anchor_left = 1.0
 	chalk_button.anchor_right = 1.0
 	chalk_button.anchor_top = 1.0
 	chalk_button.anchor_bottom = 1.0
-	chalk_button.offset_left = -190
+	chalk_button.offset_left = -112
 	chalk_button.offset_right = -24
-	chalk_button.offset_top = -180
+	chalk_button.offset_top = -208
 	chalk_button.offset_bottom = -120
-	chalk_button.add_theme_font_size_override("font_size", 16)
+	for state in ["normal", "hover", "pressed", "disabled", "focus"]:
+		var style := StyleBoxFlat.new()
+		style.bg_color = Color(0.08, 0.08, 0.08, 0.6 if state == "pressed" else 0.4)
+		style.set_corner_radius_all(44)
+		style.set_content_margin_all(10)
+		if state == "focus":
+			style.draw_center = false
+		chalk_button.add_theme_stylebox_override(state, style)
 	chalk_button.pressed.connect(_on_chalk_pressed)
 	canvas.add_child(chalk_button)
 	joystick = JOYSTICK_SCENE.instantiate()
