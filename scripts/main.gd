@@ -9,6 +9,11 @@ const WALLPAPER_SHADER := preload("res://shaders/wallpaper.gdshader")
 const CARPET_SHADER := preload("res://shaders/carpet.gdshader")
 const CHALK_ICON := preload("res://assets/chalk.svg")
 const MENU_ICON := preload("res://assets/menu.svg")
+const ERASER_ICON := preload("res://assets/eraser.svg")
+# Eraser removes the mark nearest its aim point within this radius, else the
+# latest mark if the player is still this close to it.
+const ERASE_RADIUS := 1.0
+const ERASE_FALLBACK_RANGE := 4.0
 const DOORWAY_SHADER := preload("res://shaders/light_doorway.gdshader")
 const SHAFT_SHADER := preload("res://shaders/light_shaft.gdshader")
 const DOOR_SIZE := Vector2(1.1, 2.2)
@@ -178,6 +183,8 @@ var player: Player
 var joystick: Joystick
 var menu_button: Button
 var chalk_button: Button
+var eraser_button: Button
+var chalk_marks: Array[Node3D] = []
 var fade_overlay: ColorRect
 var menu_overlay: ColorRect
 var portal_node: Node3D
@@ -806,29 +813,12 @@ func build_ui() -> void:
 	set_menu_icon_color(Color.WHITE if current_theme["ambient_energy"] < 0.3 else Color.BLACK)
 	menu_button.pressed.connect(open_menu)
 	canvas.add_child(menu_button)
-	chalk_button = Button.new()
-	chalk_button.icon = CHALK_ICON
-	chalk_button.expand_icon = true
-	chalk_button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	chalk_button.tooltip_text = "Chalk"
-	chalk_button.anchor_left = 1.0
-	chalk_button.anchor_right = 1.0
-	chalk_button.anchor_top = 1.0
-	chalk_button.anchor_bottom = 1.0
-	chalk_button.offset_left = -112
-	chalk_button.offset_right = -24
-	chalk_button.offset_top = -208
-	chalk_button.offset_bottom = -120
-	for state in ["normal", "hover", "pressed", "disabled", "focus"]:
-		var style := StyleBoxFlat.new()
-		style.bg_color = Color(0.08, 0.08, 0.08, 0.6 if state == "pressed" else 0.4)
-		style.set_corner_radius_all(44)
-		style.set_content_margin_all(10)
-		if state == "focus":
-			style.draw_center = false
-		chalk_button.add_theme_stylebox_override(state, style)
+	chalk_button = make_tool_button(CHALK_ICON, "Chalk", -112, -24)
 	chalk_button.pressed.connect(_on_chalk_pressed)
 	canvas.add_child(chalk_button)
+	eraser_button = make_tool_button(ERASER_ICON, "Eraser", -200, -112)
+	eraser_button.pressed.connect(_on_eraser_pressed)
+	canvas.add_child(eraser_button)
 	joystick = JOYSTICK_SCENE.instantiate()
 	joystick.anchor_left = 0.5
 	joystick.anchor_right = 0.5
@@ -937,9 +927,65 @@ func _on_player_started_moving() -> void:
 	var tween := create_tween()
 	tween.tween_property(hud, "modulate:a", 0.0, 0.5)
 
+# Bare icon button anchored to the bottom-right corner.
+func make_tool_button(icon: Texture2D, tooltip: String, offset_left: float, offset_right: float) -> Button:
+	var button := Button.new()
+	button.icon = icon
+	button.expand_icon = true
+	button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	button.tooltip_text = tooltip
+	button.anchor_left = 1.0
+	button.anchor_right = 1.0
+	button.anchor_top = 1.0
+	button.anchor_bottom = 1.0
+	button.offset_left = offset_left
+	button.offset_right = offset_right
+	button.offset_top = -208
+	button.offset_bottom = -120
+	for state in ["normal", "hover", "pressed", "disabled", "focus"]:
+		var style := StyleBoxEmpty.new()
+		style.set_content_margin_all(10)
+		button.add_theme_stylebox_override(state, style)
+	button.add_theme_color_override("icon_pressed_color", Color(1, 1, 1, 0.6))
+	button.add_theme_color_override("icon_disabled_color", Color(1, 1, 1, 0.35))
+	return button
+
 func _on_chalk_pressed() -> void:
 	if won:
 		return
+	var hit := chalk_target()
+	if hit.is_empty():
+		return
+	var hit_position: Vector3 = hit["position"]
+	var hit_normal: Vector3 = hit["normal"]
+	add_chalk_mark(hit_position, hit_normal)
+
+func _on_eraser_pressed() -> void:
+	if won or chalk_marks.is_empty():
+		return
+	var target: Node3D = null
+	var hit := chalk_target()
+	if not hit.is_empty():
+		var hit_position: Vector3 = hit["position"]
+		var best := ERASE_RADIUS
+		for mark in chalk_marks:
+			var distance := mark.global_position.distance_to(hit_position)
+			if distance < best:
+				best = distance
+				target = mark
+	if target == null:
+		var latest: Node3D = chalk_marks.back()
+		if latest.global_position.distance_to(player.global_position) < ERASE_FALLBACK_RANGE:
+			target = latest
+	if target == null:
+		return
+	chalk_marks.erase(target)
+	var tween := create_tween()
+	tween.tween_property(target, "scale", Vector3(0.01, 0.01, 0.01), 0.15)
+	tween.tween_callback(target.queue_free)
+
+# Where chalk goes: the wall in front if one is within reach, else the floor ahead.
+func chalk_target() -> Dictionary:
 	var camera := player.get_node("Camera3D") as Camera3D
 	var from := camera.global_position
 	var to := from - camera.global_transform.basis.z * 3.2
@@ -950,19 +996,17 @@ func _on_chalk_pressed() -> void:
 		# No wall within reach: mark the floor just ahead instead.
 		var forward := -player.global_transform.basis.z
 		forward.y = 0.0
-		var ahead := player.global_position + forward.normalized() * 2.8
+		# 2.2m is as close as it can land while staying clear of the joystick.
+		var ahead := player.global_position + forward.normalized() * 2.2
 		var down := PhysicsRayQueryParameters3D.create(ahead + Vector3.UP, ahead + Vector3.DOWN, 0xFFFFFFFF, [player.get_rid()])
 		hit = space.intersect_ray(down)
-		if hit.is_empty():
-			return
-	var hit_position: Vector3 = hit["position"]
-	var hit_normal: Vector3 = hit["normal"]
-	add_chalk_mark(hit_position, hit_normal)
+	return hit
 
 func add_chalk_mark(hit_position: Vector3, normal: Vector3) -> void:
 	var marker := Node3D.new()
 	marker.position = hit_position + normal * 0.015
 	world.add_child(marker)
+	chalk_marks.append(marker)
 	# On the floor, line the X up with the player's heading instead of world up.
 	var up := Vector3.UP if absf(normal.y) < 0.9 else -player.global_transform.basis.z
 	marker.look_at(hit_position, up)
@@ -1004,6 +1048,7 @@ func _on_goal_body_entered(body: Node3D) -> void:
 		joystick.set_process_input(false)
 		joystick.modulate = Color(1, 1, 1, 0.45)
 		chalk_button.disabled = true
+		eraser_button.disabled = true
 		if current_level + 1 < LEVELS.size():
 			status.text = "Passage complete."
 			menu_button.disabled = true
