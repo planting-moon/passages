@@ -129,6 +129,7 @@ The workflow:
    ```
 
 7. Verifies the AAB is signed and uploads `build/Hallways.aab` as the `hallways-aab-<version_code>` artifact.
+8. Builds an arm64-v8a native debug symbols zip from Godot's official symbols and uploads it as the `hallways-native-debug-symbols-<version_code>` artifact.
 
 Signing is passed to Godot with environment variables, not stored in the preset:
 
@@ -174,3 +175,18 @@ This is a separate credential from the upload keystore.
 - [ ] Passwords never pasted into docs, issues, or chat
 - [ ] Release builds signed with the upload key, not the debug key
 - [ ] Google-managed app signing enabled in Play Console
+
+## 7. Play Console warnings
+
+When a release is uploaded, Play may show two warnings:
+
+- **No deobfuscation file.** This is expected for Hallways. Godot's Android Gradle template
+  ships with R8/minification disabled to avoid breaking its JNI bindings, so no
+  `mapping.txt` is generated. Do not enable R8 just to clear this warning; there is nothing
+  to deobfuscate, and enabling it can break the Godot runtime.
+- **No native debug symbols.** The AAB contains Godot's native libraries. Download the
+  `hallways-native-debug-symbols-<version_code>` artifact from the same workflow run and
+  upload it in Play Console under the release's **Native debug symbols** section. This makes
+  native crash traces readable. The symbols come from
+  `Godot_native_debug_symbols.<version>.template_release.android.zip` and only the
+  `arm64-v8a` folder is packaged (the ABI used by this app).
