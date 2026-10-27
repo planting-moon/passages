@@ -8,6 +8,11 @@ const CEILING_LIGHT_SCENE := preload("res://scenes/ceiling_light.tscn")
 const WALLPAPER_SHADER := preload("res://shaders/wallpaper.gdshader")
 const CARPET_SHADER := preload("res://shaders/carpet.gdshader")
 const CHALK_ICON := preload("res://assets/chalk.svg")
+const MENU_ICON := preload("res://assets/menu.svg")
+const DOORWAY_SHADER := preload("res://shaders/light_doorway.gdshader")
+const SHAFT_SHADER := preload("res://shaders/light_shaft.gdshader")
+const DOOR_SIZE := Vector2(1.1, 2.2)
+const DOOR_LIGHT_COLOR := Color(1.0, 0.88, 0.68)
 # Share of the corridor width covered by the carpet border, on each side.
 const CARPET_BORDER_RATIO := 0.1
 const BASEBOARD_HEIGHT := 0.14
@@ -30,7 +35,7 @@ const WALLPAPERS := [
 var LEVELS := [
 	{
 		"title": "Passage I",
-		"maze": ["#####", "#S..#", "#.#.#", "#.#.#", "###E#"],
+		"maze": ["#####", "#S..#", "#.#.#", "#.#.#", "#.#E#", "#####"],
 		"ambient": Color(1.0, 0.95, 0.86),
 		"ambient_energy": 0.7,
 		"background": Color(0.55, 0.7, 0.85),
@@ -177,6 +182,10 @@ var fade_overlay: ColorRect
 var menu_overlay: ColorRect
 var portal_node: Node3D
 var portal_time := 0.0
+var doorway_material: ShaderMaterial
+var shaft_material: ShaderMaterial
+var door_light: SpotLight3D
+var trim_material: StandardMaterial3D
 var hud: Label
 var status: Label
 var won := false
@@ -214,14 +223,19 @@ func _ready() -> void:
 	build_level()
 	spawn_player()
 	build_goal()
+	if "--peek-exit" in OS.get_cmdline_user_args():
+		peek_exit()
 	build_ui()
 	fade_in()
+	match_menu_icon_to_backdrop()
 
 func _process(delta: float) -> void:
 	if is_instance_valid(portal_node) and not won:
 		portal_time += delta
-		var pulse := 1.0 + sin(portal_time * 2.0) * 0.03
-		portal_node.scale = Vector3(pulse, pulse, 1.0)
+		var pulse := 1.0 + sin(portal_time * 1.6) * 0.06
+		doorway_material.set_shader_parameter("intensity", pulse)
+		shaft_material.set_shader_parameter("intensity", 0.12 * pulse)
+		door_light.light_energy = 2.2 * pulse
 
 func fade_in() -> void:
 	if fade_overlay:
@@ -466,7 +480,7 @@ func build_level() -> void:
 	var wallpaper: Dictionary = WALLPAPERS[current_level % WALLPAPERS.size()]
 	var wall_color: Color = current_theme["wall"]
 	wall_material = make_paper_material(wall_color, wall_color.darkened(0.12), int(wallpaper["pattern"]), float(wallpaper["scale"]), float(wallpaper["width"]), 0.85)
-	var trim_material := StandardMaterial3D.new()
+	trim_material = StandardMaterial3D.new()
 	trim_material.albedo_color = wall_color.lerp(Color(0.97, 0.96, 0.93), 0.55)
 	trim_material.roughness = 0.45
 	var floor_color: Color = current_theme["floor"]
@@ -499,7 +513,7 @@ func build_level() -> void:
 			else:
 				if x % light_spacing == 1 and y % light_spacing == 1:
 					var fixture := CEILING_LIGHT_SCENE.instantiate()
-					fixture.position = cell_to_world(Vector2i(x, y)) + Vector3(0, WALL_HEIGHT - 0.04, 0)
+					fixture.position = cell_to_world(Vector2i(x, y)) + Vector3(0, WALL_HEIGHT - 0.003, 0)
 					world.add_child(fixture)
 				if tile == "S":
 					start_cell = Vector2i(x, y)
@@ -594,27 +608,158 @@ func build_goal() -> void:
 	goal_shape.size = Vector3(2.4, 2.0, 2.4)
 	goal_collision.shape = goal_shape
 	goal_area.add_child(goal_collision)
+	# The doorway sits on the dead-end wall; its local +Z faces back into the cell.
 	portal_node = Node3D.new()
-	var far_dir := -find_open_dir(goal_cell)
+	var far_dir := find_door_dir(goal_cell)
 	portal_node.position = cell_to_world(goal_cell) + Vector3(far_dir.x, 0, far_dir.y) * (CELL_SIZE * 0.5)
-	portal_node.rotation.y = PI * 0.5 if far_dir.x != 0 else 0.0
-	var light_material := StandardMaterial3D.new()
-	light_material.albedo_color = Color(1.0, 0.95, 0.82)
-	light_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	light_material.emission_enabled = true
-	light_material.emission = Color(1.0, 0.9, 0.7)
-	light_material.emission_energy_multiplier = 1.2
-	var portal_mesh := MeshInstance3D.new()
-	var portal_box := BoxMesh.new()
-	portal_box.size = Vector3(1.1, 2.2, 0.06)
-	portal_mesh.mesh = portal_box
-	portal_mesh.material_override = light_material
-	portal_mesh.position = Vector3(0, 1.1, 0)
-	portal_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	portal_node.add_child(portal_mesh)
+	portal_node.rotation.y = atan2(-far_dir.x, -far_dir.y)
+	build_doorway(portal_node)
 	goal_area.body_entered.connect(_on_goal_body_entered)
 	world.add_child(goal_area)
 	world.add_child(portal_node)
+
+func build_doorway(root: Node3D) -> void:
+	doorway_material = ShaderMaterial.new()
+	doorway_material.shader = DOORWAY_SHADER
+	doorway_material.set_shader_parameter("opening_size", DOOR_SIZE)
+	doorway_material.set_shader_parameter("light_color", DOOR_LIGHT_COLOR)
+	var opening := MeshInstance3D.new()
+	var quad := QuadMesh.new()
+	quad.size = DOOR_SIZE
+	opening.mesh = quad
+	opening.material_override = doorway_material
+	opening.position = Vector3(0, DOOR_SIZE.y * 0.5, 0.03)
+	opening.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	root.add_child(opening)
+
+	# Casing around the opening, in the trim colour.
+	var casing_width := 0.09
+	var casing_depth := 0.05
+	var post_height := DOOR_SIZE.y + casing_width
+	for side in [-1.0, 1.0]:
+		add_casing(root, Vector3(casing_width, post_height, casing_depth), Vector3(side * (DOOR_SIZE.x + casing_width) * 0.5, post_height * 0.5, casing_depth * 0.5))
+	add_casing(root, Vector3(DOOR_SIZE.x + casing_width * 2.0, casing_width, casing_depth), Vector3(0, DOOR_SIZE.y + casing_width * 0.5, casing_depth * 0.5))
+
+	shaft_material = ShaderMaterial.new()
+	shaft_material.shader = SHAFT_SHADER
+	shaft_material.set_shader_parameter("light_color", DOOR_LIGHT_COLOR)
+	var shaft := MeshInstance3D.new()
+	shaft.mesh = build_shaft_mesh(DOOR_SIZE, Vector2(2.0, 2.5), 3.2)
+	shaft.material_override = shaft_material
+	shaft.position.z = 0.04
+	shaft.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	root.add_child(shaft)
+
+	door_light = SpotLight3D.new()
+	door_light.light_color = DOOR_LIGHT_COLOR
+	door_light.light_energy = 2.2
+	door_light.spot_range = 9.0
+	door_light.spot_angle = 70.0
+	door_light.spot_attenuation = 1.4
+	door_light.shadow_enabled = false
+	door_light.position = Vector3(0, 1.7, 0.1)
+	door_light.rotation = Vector3(deg_to_rad(-12.0), PI, 0)
+	root.add_child(door_light)
+
+	root.add_child(build_dust(Vector3(DOOR_SIZE.x * 0.6, DOOR_SIZE.y * 0.5, 1.4), Vector3(0, DOOR_SIZE.y * 0.5, 1.5)))
+
+func add_casing(root: Node3D, size: Vector3, position: Vector3) -> void:
+	var casing := MeshInstance3D.new()
+	var box := BoxMesh.new()
+	box.size = size
+	casing.mesh = box
+	casing.material_override = trim_material
+	casing.position = position
+	root.add_child(casing)
+
+# Open-ended frustum from the door outward along +Z (no floor face, to avoid z-fighting).
+func build_shaft_mesh(near_size: Vector2, far_size: Vector2, length: float) -> ArrayMesh:
+	var near := [Vector3(-near_size.x * 0.5, 0, 0), Vector3(near_size.x * 0.5, 0, 0), Vector3(near_size.x * 0.5, near_size.y, 0), Vector3(-near_size.x * 0.5, near_size.y, 0)]
+	var far := [Vector3(-far_size.x * 0.5, 0, length), Vector3(far_size.x * 0.5, 0, length), Vector3(far_size.x * 0.5, far_size.y, length), Vector3(-far_size.x * 0.5, far_size.y, length)]
+	var surface := SurfaceTool.new()
+	surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+	# right, top, left
+	for edge in [[1, 2], [2, 3], [3, 0]]:
+		var a: int = edge[0]
+		var b: int = edge[1]
+		for vertex in [[near[a], 0.0], [far[a], 1.0], [far[b], 1.0], [near[a], 0.0], [far[b], 1.0], [near[b], 0.0]]:
+			surface.set_uv(Vector2(0, vertex[1]))
+			surface.add_vertex(vertex[0])
+	surface.generate_normals()
+	return surface.commit()
+
+func build_dust(extents: Vector3, center: Vector3) -> GPUParticles3D:
+	var process := ParticleProcessMaterial.new()
+	process.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	process.emission_box_extents = extents
+	process.direction = Vector3(0, 1, 0)
+	process.spread = 180.0
+	process.initial_velocity_min = 0.02
+	process.initial_velocity_max = 0.07
+	process.gravity = Vector3.ZERO
+	process.scale_min = 0.5
+	process.scale_max = 1.2
+	var fade := Gradient.new()
+	fade.offsets = PackedFloat32Array([0.0, 0.3, 0.7, 1.0])
+	fade.colors = PackedColorArray([Color(1, 1, 1, 0), Color(1, 1, 1, 1), Color(1, 1, 1, 1), Color(1, 1, 1, 0)])
+	var ramp := GradientTexture1D.new()
+	ramp.gradient = fade
+	process.color_ramp = ramp
+	var mote := StandardMaterial3D.new()
+	mote.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mote.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mote.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	mote.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	mote.vertex_color_use_as_albedo = true
+	mote.albedo_color = Color(DOOR_LIGHT_COLOR, 0.4)
+	var soft_dot := Gradient.new()
+	soft_dot.colors = PackedColorArray([Color(1, 1, 1, 1), Color(1, 1, 1, 0)])
+	var dot_texture := GradientTexture2D.new()
+	dot_texture.gradient = soft_dot
+	dot_texture.fill = GradientTexture2D.FILL_RADIAL
+	dot_texture.fill_from = Vector2(0.5, 0.5)
+	dot_texture.fill_to = Vector2(0.5, 0.0)
+	dot_texture.width = 16
+	dot_texture.height = 16
+	mote.albedo_texture = dot_texture
+	var quad := QuadMesh.new()
+	quad.size = Vector2(0.014, 0.014)
+	quad.material = mote
+	var dust := GPUParticles3D.new()
+	dust.amount = 48
+	dust.lifetime = 6.0
+	dust.preprocess = 6.0
+	dust.process_material = process
+	dust.draw_pass_1 = quad
+	dust.position = center
+	dust.visibility_aabb = AABB(-extents * 1.5, extents * 3.0)
+	return dust
+
+# Dev helper: stand a little way back from the exit, facing the door.
+func peek_exit() -> void:
+	var door_dir := find_door_dir(goal_cell)
+	var stand := goal_cell
+	for i in range(1):
+		if is_wall_cell(stand - door_dir) or stand.x - door_dir.x < 0 or stand.y - door_dir.y < 0:
+			break
+		stand -= door_dir
+	player.position = cell_to_world(stand) + Vector3(0, 0.05, 0)
+	player.rotation.y = atan2(-door_dir.x, -door_dir.y)
+
+# Wall the exit door hangs on: opposite the way in when possible, else any wall.
+func find_door_dir(cell: Vector2i) -> Vector2i:
+	var back := -find_open_dir(cell)
+	if is_wall_cell(cell + back):
+		return back
+	for direction in [Vector2i(0, -1), Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, 1)]:
+		if is_wall_cell(cell + direction):
+			return direction
+	return back
+
+func is_wall_cell(cell: Vector2i) -> bool:
+	if cell.x < 0 or cell.x >= level_width or cell.y < 0 or cell.y >= level_height:
+		return false
+	return current_layout[cell.y].substr(cell.x, 1) == "#"
 
 func find_open_dir(cell: Vector2i) -> Vector2i:
 	for direction in [Vector2i(0, -1), Vector2i(-1, 0), Vector2i(1, 0), Vector2i(0, 1)]:
@@ -646,14 +791,19 @@ func build_ui() -> void:
 	status.add_theme_constant_override("shadow_offset_y", 2)
 	canvas.add_child(status)
 	menu_button = Button.new()
-	menu_button.text = "☰"
+	menu_button.icon = MENU_ICON
+	menu_button.expand_icon = true
+	menu_button.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	menu_button.tooltip_text = "Menu"
 	menu_button.anchor_left = 1.0
 	menu_button.anchor_right = 1.0
-	menu_button.offset_left = -72
-	menu_button.offset_right = -24
-	menu_button.offset_top = 48
-	menu_button.offset_bottom = 96
-	menu_button.add_theme_font_size_override("font_size", 26)
+	menu_button.offset_left = -76
+	menu_button.offset_right = -20
+	menu_button.offset_top = 44
+	menu_button.offset_bottom = 100
+	for state in ["normal", "hover", "pressed", "disabled", "focus"]:
+		menu_button.add_theme_stylebox_override(state, StyleBoxEmpty.new())
+	set_menu_icon_color(Color.WHITE if current_theme["ambient_energy"] < 0.3 else Color.BLACK)
 	menu_button.pressed.connect(open_menu)
 	canvas.add_child(menu_button)
 	chalk_button = Button.new()
@@ -745,6 +895,36 @@ func build_ui() -> void:
 	restart_scratch_button.add_theme_font_size_override("font_size", 18)
 	restart_scratch_button.pressed.connect(_on_restart_scratch)
 	vbox.add_child(restart_scratch_button)
+
+func set_menu_icon_color(color: Color) -> void:
+	menu_button.add_theme_color_override("icon_normal_color", color)
+	menu_button.add_theme_color_override("icon_hover_color", color)
+	menu_button.add_theme_color_override("icon_focus_color", color)
+	menu_button.add_theme_color_override("icon_pressed_color", Color(color, 0.6))
+	menu_button.add_theme_color_override("icon_disabled_color", Color(color, 0.35))
+
+# Reads back one rendered frame and picks black or white menu lines depending on
+# how bright the scene is behind the button.
+func match_menu_icon_to_backdrop() -> void:
+	for i in range(3):
+		await RenderingServer.frame_post_draw
+	if not is_inside_tree():
+		return
+	var image := world.get_texture().get_image()
+	if image == null:
+		return
+	var screen := get_viewport().get_visible_rect().size
+	var rect := menu_button.get_global_rect()
+	var pixel_scale := Vector2(image.get_width(), image.get_height()) / screen
+	var total := 0.0
+	var samples := 0
+	for sy in range(5):
+		for sx in range(5):
+			var point := rect.position + rect.size * Vector2((sx + 0.5) / 5.0, (sy + 0.5) / 5.0)
+			var pixel := Vector2i(point * pixel_scale).clamp(Vector2i.ZERO, Vector2i(image.get_width() - 1, image.get_height() - 1))
+			total += image.get_pixelv(pixel).get_luminance()
+			samples += 1
+	set_menu_icon_color(Color.BLACK if total / samples > 0.4 else Color.WHITE)
 
 func cell_to_world(cell: Vector2i) -> Vector3:
 	return Vector3(

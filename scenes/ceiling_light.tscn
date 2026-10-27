@@ -1,36 +1,47 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene load_steps=8 format=3]
 
-[sub_resource type="CylinderMesh" id="CylinderMesh_housing"]
-top_radius = 0.55
-bottom_radius = 0.55
-height = 0.08
-radial_segments = 24
+[ext_resource type="Shader" path="res://shaders/recessed_light.gdshader" id="1_recessed"]
 
-[sub_resource type="StandardMaterial3D" id="Material_housing"]
-albedo_color = Color(0.26, 0.24, 0.21, 1)
-roughness = 0.9
+[sub_resource type="PlaneMesh" id="PlaneMesh_downlight"]
+size = Vector2(0.32, 0.32)
 
-[sub_resource type="CylinderMesh" id="CylinderMesh_panel"]
-top_radius = 0.45
-bottom_radius = 0.45
-height = 0.04
-radial_segments = 24
+[sub_resource type="ShaderMaterial" id="Material_downlight"]
+shader = ExtResource("1_recessed")
 
-[sub_resource type="StandardMaterial3D" id="Material_panel"]
-albedo_color = Color(1, 0.96, 0.84, 1)
-emission_enabled = true
-emission = Color(1, 0.9, 0.7, 1)
-emission_energy_multiplier = 2.0
+[sub_resource type="Gradient" id="Gradient_halo"]
+offsets = PackedFloat32Array(0, 0.25, 1)
+colors = PackedColorArray(1, 1, 1, 1, 1, 1, 1, 0.35, 1, 1, 1, 0)
+
+[sub_resource type="GradientTexture2D" id="GradientTexture_halo"]
+gradient = SubResource("Gradient_halo")
+width = 64
+height = 64
+fill = 1
+fill_from = Vector2(0.5, 0.5)
+fill_to = Vector2(0.5, 0)
+
+[sub_resource type="StandardMaterial3D" id="Material_halo"]
+transparency = 1
+blend_mode = 1
+shading_mode = 0
+albedo_color = Color(1, 0.9, 0.72, 0.35)
+albedo_texture = SubResource("GradientTexture_halo")
+billboard_mode = 1
+disable_fog = true
+
+[sub_resource type="QuadMesh" id="QuadMesh_halo"]
+size = Vector2(0.7, 0.7)
 
 [node name="CeilingLight" type="Node3D"]
 
-[node name="Housing" type="MeshInstance3D" parent="."]
-mesh = SubResource("CylinderMesh_housing")
-material_override = SubResource("Material_housing")
+[node name="Downlight" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, -1, 0, 0, 0, -1, 0, 0, 0)
+mesh = SubResource("PlaneMesh_downlight")
+material_override = SubResource("Material_downlight")
 cast_shadow = 0
 
-[node name="Panel" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.06, 0)
-mesh = SubResource("CylinderMesh_panel")
-material_override = SubResource("Material_panel")
+[node name="Halo" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.02, 0)
+mesh = SubResource("QuadMesh_halo")
+material_override = SubResource("Material_halo")
 cast_shadow = 0
