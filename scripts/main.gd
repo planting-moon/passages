@@ -14,6 +14,11 @@ const ERASER_ICON := preload("res://assets/eraser.svg")
 # latest mark if the player is still this close to it.
 const ERASE_RADIUS := 1.0
 const ERASE_FALLBACK_RANGE := 4.0
+const MIRROR_SHADER := preload("res://shaders/mirror.gdshader")
+const MIRROR_BOUNCES := 6
+const BANNER_SIZE := Vector2i(1024, 500)
+# Matches the chalk arrays in shaders/mirror.gdshader; older marks stop reflecting.
+const MIRROR_CHALK_LIMIT := 32
 const DOORWAY_SHADER := preload("res://shaders/light_doorway.gdshader")
 const SHAFT_SHADER := preload("res://shaders/light_shaft.gdshader")
 const DOOR_SIZE := Vector2(1.1, 2.2)
@@ -39,7 +44,7 @@ const WALLPAPERS := [
 
 var LEVELS := [
 	{
-		"title": "Passage I",
+		"title": "Hallway I",
 		"maze": ["#####", "#S..#", "#.#.#", "#.#.#", "#.#E#", "#####"],
 		"ambient": Color(1.0, 0.95, 0.86),
 		"ambient_energy": 0.7,
@@ -51,7 +56,7 @@ var LEVELS := [
 		"ceiling": Color(0.92, 0.88, 0.78),
 	},
 	{
-		"title": "Passage II",
+		"title": "Hallway II",
 		"cells": Vector2i(3, 3),
 		"loops": 0,
 		"rooms": 0,
@@ -65,7 +70,7 @@ var LEVELS := [
 		"ceiling": Color(0.95, 0.86, 0.68),
 	},
 	{
-		"title": "Passage III",
+		"title": "Hallway III",
 		"cells": Vector2i(4, 4),
 		"loops": 1,
 		"rooms": 0,
@@ -79,7 +84,7 @@ var LEVELS := [
 		"ceiling": Color(0.86, 0.93, 0.88),
 	},
 	{
-		"title": "Passage IV",
+		"title": "Hallway IV",
 		"cells": Vector2i(5, 5),
 		"loops": 2,
 		"rooms": 1,
@@ -93,7 +98,7 @@ var LEVELS := [
 		"ceiling": Color(0.95, 0.87, 0.86),
 	},
 	{
-		"title": "Passage V",
+		"title": "Hallway V",
 		"cells": Vector2i(6, 6),
 		"loops": 3,
 		"rooms": 1,
@@ -107,7 +112,25 @@ var LEVELS := [
 		"ceiling": Color(0.88, 0.86, 0.95),
 	},
 	{
-		"title": "Passage VI",
+		"title": "Hall of Mirrors",
+		"mirror": true,
+		"mirror_guides": true,
+		"cells": Vector2i(6, 6),
+		"loops": 2,
+		"rooms": 1,
+		"ambient": Color(0.92, 0.96, 1.0),
+		"ambient_energy": 0.7,
+		"background": Color(0.02, 0.03, 0.03),
+		"fog": Color(0.7, 0.75, 0.75),
+		"fog_density": 0.002,
+		"wall": Color(0.82, 0.86, 0.88),
+		"floor": Color(0.66, 0.68, 0.7),
+		"ceiling": Color(0.9, 0.92, 0.94),
+	},
+	{
+		"title": "Hallway VI",
+		"mirror": true,
+		"mirror_guides": true,
 		"cells": Vector2i(7, 7),
 		"loops": 4,
 		"rooms": 2,
@@ -121,7 +144,7 @@ var LEVELS := [
 		"ceiling": Color(0.95, 0.9, 0.76),
 	},
 	{
-		"title": "Passage VII",
+		"title": "Hallway VII",
 		"cells": Vector2i(8, 8),
 		"loops": 5,
 		"rooms": 2,
@@ -135,7 +158,7 @@ var LEVELS := [
 		"ceiling": Color(0.87, 0.91, 0.97),
 	},
 	{
-		"title": "Passage VIII",
+		"title": "Hallway VIII",
 		"cells": Vector2i(9, 9),
 		"loops": 6,
 		"rooms": 3,
@@ -149,7 +172,7 @@ var LEVELS := [
 		"ceiling": Color(0.89, 0.93, 0.81),
 	},
 	{
-		"title": "Passage IX",
+		"title": "Hallway IX",
 		"cells": Vector2i(10, 10),
 		"loops": 7,
 		"rooms": 3,
@@ -163,7 +186,7 @@ var LEVELS := [
 		"ceiling": Color(0.96, 0.87, 0.83),
 	},
 	{
-		"title": "Passage X",
+		"title": "Hallway X",
 		"cells": Vector2i(11, 11),
 		"loops": 8,
 		"rooms": 4,
@@ -187,6 +210,7 @@ var eraser_button: Button
 var chalk_marks: Array[Node3D] = []
 var fade_overlay: ColorRect
 var menu_overlay: ColorRect
+var level_overlay: ColorRect
 var portal_node: Node3D
 var portal_time := 0.0
 var doorway_material: ShaderMaterial
@@ -196,10 +220,15 @@ var trim_material: StandardMaterial3D
 var hud: Label
 var status: Label
 var won := false
+var banner_mode := false
 var current_level := 0
 var current_layout: Array = []
 var current_theme: Dictionary = {}
 var wall_material: ShaderMaterial
+var mirror_material: ShaderMaterial
+var square_light_material: ShaderMaterial
+var chalk_cell_image: Image
+var chalk_cell_texture: ImageTexture
 var level_width := 0
 var level_height := 0
 var start_cell := Vector2i.ZERO
@@ -235,6 +264,8 @@ func _ready() -> void:
 	build_ui()
 	fade_in()
 	match_menu_icon_to_backdrop()
+	if "--banner" in OS.get_cmdline_user_args():
+		enter_banner_mode()
 
 func _process(delta: float) -> void:
 	if is_instance_valid(portal_node) and not won:
@@ -243,6 +274,10 @@ func _process(delta: float) -> void:
 		doorway_material.set_shader_parameter("intensity", pulse)
 		shaft_material.set_shader_parameter("intensity", 0.12 * pulse)
 		door_light.light_energy = 2.2 * pulse
+		if mirror_material:
+			mirror_material.set_shader_parameter("door_intensity", pulse)
+	if mirror_material:
+		update_mirror_figure()
 
 func fade_in() -> void:
 	if fade_overlay:
@@ -290,7 +325,7 @@ func build_extra_levels() -> void:
 		var loops := mini(4 + int(float(i - 10) / 3.0), 14)
 		var rooms := mini(2 + int(float(i - 10) / 5.0), 8)
 		LEVELS.append({
-			"title": "Passage " + to_roman(i + 1),
+			"title": "Hallway " + to_roman(i + 1),
 			"cells": Vector2i(cells, cells),
 			"loops": loops,
 			"rooms": rooms,
@@ -302,8 +337,11 @@ func build_extra_levels() -> void:
 			"floor": palette["floor"],
 			"ceiling": palette["ceiling"],
 		})
+	# Hallway XV brings the mirrors back in a much larger maze.
+	LEVELS[14]["mirror"] = true
+	LEVELS[14]["mirror_guides"] = true
 	for i in range(LEVELS.size()):
-		LEVELS[i]["title"] = "Passage " + to_roman(i + 1)
+		LEVELS[i]["title"] = "Hallway " + to_roman(i + 1)
 
 func to_roman(value: int) -> String:
 	var numerals := [
@@ -491,9 +529,15 @@ func build_level() -> void:
 	trim_material.albedo_color = wall_color.lerp(Color(0.97, 0.96, 0.93), 0.55)
 	trim_material.roughness = 0.45
 	var floor_color: Color = current_theme["floor"]
-	var floor_material := make_carpet_material(floor_color, floor_color.lerp(wall_color.darkened(0.55), 0.9))
+	var floor_material: Material = make_carpet_material(floor_color, floor_color.lerp(wall_color.darkened(0.55), 0.9))
 	var ceiling_color: Color = current_theme["ceiling"]
-	var ceiling_material := make_paper_material(ceiling_color, ceiling_color, 0, 1.0, 0.0, 1.0)
+	var ceiling_material: Material = make_paper_material(ceiling_color, ceiling_color, 0, 1.0, 0.0, 1.0)
+	var light_spacing := 2 if level_width < 24 else 3
+	if current_theme.get("mirror", false):
+		trim_material.albedo_color = Color(0.14, 0.15, 0.16)
+		wall_material = make_mirror_material(light_spacing)
+		ceiling_material = wall_material
+		floor_material = wall_material
 	var span_x := level_width * CELL_SIZE
 	var span_z := level_height * CELL_SIZE
 	add_box(Vector3(0, -0.1, 0), Vector3(span_x, 0.2, span_z), floor_material)
@@ -510,7 +554,6 @@ func build_level() -> void:
 	grid_map.cell_size = Vector3(CELL_SIZE, WALL_HEIGHT, CELL_SIZE)
 	grid_map.position = Vector3(-level_width * CELL_SIZE * 0.5, 0.0, -level_height * CELL_SIZE * 0.5)
 	world.add_child(grid_map)
-	var light_spacing := 2 if level_width < 24 else 3
 	for y in range(level_height):
 		var row: String = current_layout[y]
 		for x in range(level_width):
@@ -521,6 +564,8 @@ func build_level() -> void:
 				if x % light_spacing == 1 and y % light_spacing == 1:
 					var fixture := CEILING_LIGHT_SCENE.instantiate()
 					fixture.position = cell_to_world(Vector2i(x, y)) + Vector3(0, WALL_HEIGHT - 0.003, 0)
+					if mirror_material:
+						make_fixture_square(fixture)
 					world.add_child(fixture)
 				if tile == "S":
 					start_cell = Vector2i(x, y)
@@ -538,15 +583,27 @@ func make_paper_material(paper: Color, ink: Color, pattern: int, pattern_scale: 
 	material.set_shader_parameter("roughness_value", roughness)
 	return material
 
-func make_carpet_material(field: Color, border: Color) -> ShaderMaterial:
+# The glass shows square lights, so the real fixtures on mirror levels match.
+func make_fixture_square(fixture: Node3D) -> void:
+	var downlight := fixture.get_node("Downlight") as MeshInstance3D
+	if not square_light_material:
+		square_light_material = downlight.material_override.duplicate()
+		square_light_material.set_shader_parameter("square", true)
+	downlight.material_override = square_light_material
+	fixture.get_node("Halo").visible = false
+
+func make_maze_texture() -> ImageTexture:
 	var maze_image := Image.create(level_width, level_height, false, Image.FORMAT_L8)
 	for y in range(level_height):
 		var row: String = current_layout[y]
 		for x in range(level_width):
 			maze_image.set_pixel(x, y, Color.WHITE if row.substr(x, 1) == "#" else Color.BLACK)
+	return ImageTexture.create_from_image(maze_image)
+
+func make_carpet_material(field: Color, border: Color) -> ShaderMaterial:
 	var material := ShaderMaterial.new()
 	material.shader = CARPET_SHADER
-	material.set_shader_parameter("maze_map", ImageTexture.create_from_image(maze_image))
+	material.set_shader_parameter("maze_map", make_maze_texture())
 	material.set_shader_parameter("maze_size", Vector2(level_width, level_height))
 	material.set_shader_parameter("maze_origin", Vector2(-level_width * CELL_SIZE * 0.5, -level_height * CELL_SIZE * 0.5))
 	material.set_shader_parameter("cell_size", CELL_SIZE)
@@ -555,6 +612,68 @@ func make_carpet_material(field: Color, border: Color) -> ShaderMaterial:
 	material.set_shader_parameter("border_color", border)
 	return material
 
+func make_mirror_material(light_spacing: int) -> ShaderMaterial:
+	mirror_material = ShaderMaterial.new()
+	mirror_material.shader = MIRROR_SHADER
+	mirror_material.set_shader_parameter("maze_map", make_maze_texture())
+	mirror_material.set_shader_parameter("maze_size", Vector2(level_width, level_height))
+	mirror_material.set_shader_parameter("maze_origin", Vector2(-level_width * CELL_SIZE * 0.5, -level_height * CELL_SIZE * 0.5))
+	mirror_material.set_shader_parameter("cell_size", CELL_SIZE)
+	mirror_material.set_shader_parameter("wall_height", WALL_HEIGHT)
+	mirror_material.set_shader_parameter("max_bounces", MIRROR_BOUNCES)
+	mirror_material.set_shader_parameter("show_guides", current_theme.get("mirror_guides", false))
+	mirror_material.set_shader_parameter("baseboard_height", BASEBOARD_HEIGHT)
+	mirror_material.set_shader_parameter("top_trim_height", TOP_TRIM_HEIGHT)
+	mirror_material.set_shader_parameter("border_width", CELL_SIZE * CARPET_BORDER_RATIO)
+	mirror_material.set_shader_parameter("trim_color", trim_material.albedo_color)
+	mirror_material.set_shader_parameter("light_spacing", float(light_spacing))
+	mirror_material.set_shader_parameter("door_size", DOOR_SIZE)
+	mirror_material.set_shader_parameter("door_color", DOOR_LIGHT_COLOR)
+	chalk_cell_image = Image.create(level_width, level_height, false, Image.FORMAT_L8)
+	chalk_cell_texture = ImageTexture.create_from_image(chalk_cell_image)
+	mirror_material.set_shader_parameter("chalk_cells", chalk_cell_texture)
+	return mirror_material
+
+# Hands the newest chalk marks to the mirror shader so they appear in reflections.
+func sync_mirror_chalk() -> void:
+	if not mirror_material:
+		return
+	var positions := PackedVector3Array()
+	var rights := PackedVector3Array()
+	var ups := PackedVector3Array()
+	chalk_cell_image.fill(Color.BLACK)
+	for i in range(maxi(chalk_marks.size() - MIRROR_CHALK_LIMIT, 0), chalk_marks.size()):
+		var mark := chalk_marks[i]
+		var basis := mark.global_transform.basis
+		positions.append(mark.global_position)
+		rights.append(basis.x)
+		ups.append(basis.y)
+		# Flag the neighbours too, since an X can overhang its own cell.
+		var cell := Vector2i(((Vector2(mark.global_position.x, mark.global_position.z) + Vector2(level_width, level_height) * CELL_SIZE * 0.5) / CELL_SIZE).floor())
+		for dy in range(-1, 2):
+			for dx in range(-1, 2):
+				var flagged := cell + Vector2i(dx, dy)
+				if flagged.x >= 0 and flagged.x < level_width and flagged.y >= 0 and flagged.y < level_height:
+					chalk_cell_image.set_pixelv(flagged, Color.WHITE)
+	var count := positions.size()
+	positions.resize(MIRROR_CHALK_LIMIT)
+	rights.resize(MIRROR_CHALK_LIMIT)
+	ups.resize(MIRROR_CHALK_LIMIT)
+	mirror_material.set_shader_parameter("chalk_pos", positions)
+	mirror_material.set_shader_parameter("chalk_right", rights)
+	mirror_material.set_shader_parameter("chalk_up", ups)
+	mirror_material.set_shader_parameter("chalk_count", count)
+	chalk_cell_texture.update(chalk_cell_image)
+
+# Keeps the figure in the glass exactly where the camera is, head bob included.
+func update_mirror_figure() -> void:
+	var camera := player.camera
+	var right := player.global_transform.basis.x
+	var stride := clampf(Vector2(player.velocity.x, player.velocity.z).length() / Player.SPEED, 0.0, 1.0)
+	mirror_material.set_shader_parameter("figure_pos", camera.global_position - Vector3.UP * player.base_camera_y)
+	mirror_material.set_shader_parameter("figure_right", Vector2(right.x, right.z))
+	mirror_material.set_shader_parameter("figure_swing", sin(player.bob_time * 0.5) * stride)
+
 # Wall block with a baseboard and a slim top trim. GridMap centers items, so the
 # mesh spans -WALL_HEIGHT/2..WALL_HEIGHT/2 vertically.
 func build_wall_mesh(paper_material: Material, trim_material: Material) -> ArrayMesh:
@@ -562,6 +681,8 @@ func build_wall_mesh(paper_material: Material, trim_material: Material) -> Array
 	var mesh := ArrayMesh.new()
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, box_arrays(Vector3(CELL_SIZE, WALL_HEIGHT, CELL_SIZE), Vector3.ZERO))
 	mesh.surface_set_material(0, paper_material)
+	if mirror_material and not current_theme.get("mirror_guides", false):
+		return mesh
 	var base_size := Vector3(CELL_SIZE + BASEBOARD_DEPTH * 2.0, BASEBOARD_HEIGHT, CELL_SIZE + BASEBOARD_DEPTH * 2.0)
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, box_arrays(base_size, Vector3(0, -half_height + BASEBOARD_HEIGHT * 0.5, 0)))
 	mesh.surface_set_material(1, trim_material)
@@ -619,6 +740,9 @@ func build_goal() -> void:
 	portal_node = Node3D.new()
 	var far_dir := find_door_dir(goal_cell)
 	portal_node.position = cell_to_world(goal_cell) + Vector3(far_dir.x, 0, far_dir.y) * (CELL_SIZE * 0.5)
+	if mirror_material:
+		mirror_material.set_shader_parameter("door_center", Vector2(portal_node.position.x, portal_node.position.z))
+		mirror_material.set_shader_parameter("door_normal", Vector2(-far_dir.x, -far_dir.y))
 	portal_node.rotation.y = atan2(-far_dir.x, -far_dir.y)
 	build_doorway(portal_node)
 	goal_area.body_entered.connect(_on_goal_body_entered)
@@ -741,6 +865,24 @@ func build_dust(extents: Vector3, center: Vector3) -> GPUParticles3D:
 	dust.position = center
 	dust.visibility_aabb = AABB(-extents * 1.5, extents * 3.0)
 	return dust
+
+# Dev helper: landscape window with the controls hidden. Walk with the keyboard
+# and press P to save a store-sized banner.
+func enter_banner_mode() -> void:
+	banner_mode = true
+	DisplayServer.window_set_size(BANNER_SIZE)
+	player.camera.fov = 80.0
+	for control: Control in [hud, menu_button, chalk_button, eraser_button, joystick]:
+		control.visible = false
+
+func save_banner_shot() -> void:
+	var image := world.get_texture().get_image()
+	image.resize(BANNER_SIZE.x, BANNER_SIZE.y, Image.INTERPOLATE_LANCZOS)
+	image.convert(Image.FORMAT_RGB8)
+	var path := ProjectSettings.globalize_path("res://assets/marketing/manual-banner-%d.png" % int(Time.get_unix_time_from_system()))
+	image.save_png(path)
+	status.text = "Saved " + path.get_file()
+	print("Saved ", path, " ", image.get_size())
 
 # Dev helper: stand a little way back from the exit, facing the door.
 func peek_exit() -> void:
@@ -873,6 +1015,12 @@ func build_ui() -> void:
 	resume_button.add_theme_font_size_override("font_size", 18)
 	resume_button.pressed.connect(close_menu)
 	vbox.add_child(resume_button)
+	var select_level_button := Button.new()
+	select_level_button.text = "Select level"
+	select_level_button.custom_minimum_size = Vector2(0, 48)
+	select_level_button.add_theme_font_size_override("font_size", 18)
+	select_level_button.pressed.connect(open_level_select)
+	vbox.add_child(select_level_button)
 	var restart_level_button := Button.new()
 	restart_level_button.text = "Restart level"
 	restart_level_button.custom_minimum_size = Vector2(0, 48)
@@ -885,6 +1033,59 @@ func build_ui() -> void:
 	restart_scratch_button.add_theme_font_size_override("font_size", 18)
 	restart_scratch_button.pressed.connect(_on_restart_scratch)
 	vbox.add_child(restart_scratch_button)
+
+	level_overlay = ColorRect.new()
+	level_overlay.color = Color(0, 0, 0, 0.75)
+	level_overlay.visible = false
+	level_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	menu_layer.add_child(level_overlay)
+	level_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var level_center := CenterContainer.new()
+	level_overlay.add_child(level_center)
+	level_center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var level_panel := PanelContainer.new()
+	level_panel.custom_minimum_size = Vector2(360, 620)
+	level_center.add_child(level_panel)
+	var level_margin := MarginContainer.new()
+	level_margin.add_theme_constant_override("margin_left", 20)
+	level_margin.add_theme_constant_override("margin_right", 20)
+	level_margin.add_theme_constant_override("margin_top", 20)
+	level_margin.add_theme_constant_override("margin_bottom", 20)
+	level_panel.add_child(level_margin)
+	var level_vbox := VBoxContainer.new()
+	level_vbox.add_theme_constant_override("separation", 10)
+	level_margin.add_child(level_vbox)
+	var level_title := Label.new()
+	level_title.text = "Select level"
+	level_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	level_title.add_theme_font_size_override("font_size", 24)
+	level_vbox.add_child(level_title)
+	var level_scroll := ScrollContainer.new()
+	level_scroll.custom_minimum_size = Vector2(320, 460)
+	level_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	level_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	level_vbox.add_child(level_scroll)
+	var level_grid := GridContainer.new()
+	level_grid.columns = 4
+	level_grid.add_theme_constant_override("h_separation", 8)
+	level_grid.add_theme_constant_override("v_separation", 8)
+	level_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	level_scroll.add_child(level_grid)
+	for i in range(LEVELS.size()):
+		var level_button := Button.new()
+		level_button.text = str(i + 1)
+		level_button.custom_minimum_size = Vector2(72, 46)
+		level_button.add_theme_font_size_override("font_size", 18)
+		if i == current_level:
+			level_button.add_theme_color_override("font_color", Color(0.4, 1.0, 0.6))
+		level_button.pressed.connect(_on_select_level.bind(i))
+		level_grid.add_child(level_button)
+	var level_back_button := Button.new()
+	level_back_button.text = "Back"
+	level_back_button.custom_minimum_size = Vector2(0, 46)
+	level_back_button.add_theme_font_size_override("font_size", 18)
+	level_back_button.pressed.connect(close_level_select)
+	level_vbox.add_child(level_back_button)
 
 func set_menu_icon_color(color: Color) -> void:
 	menu_button.add_theme_color_override("icon_normal_color", color)
@@ -980,6 +1181,7 @@ func _on_eraser_pressed() -> void:
 	if target == null:
 		return
 	chalk_marks.erase(target)
+	sync_mirror_chalk()
 	var tween := create_tween()
 	tween.tween_property(target, "scale", Vector3(0.01, 0.01, 0.01), 0.15)
 	tween.tween_callback(target.queue_free)
@@ -1022,14 +1224,32 @@ func add_chalk_mark(hit_position: Vector3, normal: Vector3) -> void:
 		instance.rotation_degrees = Vector3(0, 0, angle)
 		instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		marker.add_child(instance)
+	sync_mirror_chalk()
 
 func open_menu() -> void:
+	if level_overlay:
+		level_overlay.visible = false
 	menu_overlay.visible = true
 	get_tree().paused = true
 
 func close_menu() -> void:
 	menu_overlay.visible = false
+	if level_overlay:
+		level_overlay.visible = false
 	get_tree().paused = false
+
+func open_level_select() -> void:
+	if level_overlay:
+		level_overlay.visible = true
+
+func close_level_select() -> void:
+	if level_overlay:
+		level_overlay.visible = false
+
+func _on_select_level(index: int) -> void:
+	Engine.set_meta("passages_level", index)
+	get_tree().paused = false
+	get_tree().reload_current_scene()
 
 func _on_restart_level() -> void:
 	get_tree().paused = false
@@ -1050,7 +1270,7 @@ func _on_goal_body_entered(body: Node3D) -> void:
 		chalk_button.disabled = true
 		eraser_button.disabled = true
 		if current_level + 1 < LEVELS.size():
-			status.text = "Passage complete."
+			status.text = "Hallway complete."
 			menu_button.disabled = true
 			var tween := create_tween()
 			tween.tween_property(fade_overlay, "color:a", 1.0, 0.6)
@@ -1060,13 +1280,15 @@ func _on_goal_body_entered(body: Node3D) -> void:
 			Engine.set_meta("passages_level", current_level + 1)
 			get_tree().reload_current_scene()
 		else:
-			status.text = "You completed all passages.\nOpen the menu to restart."
+			status.text = "You completed all hallways.\nOpen the menu to restart."
 
 func _unhandled_input(event: InputEvent) -> void:
 	if won:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_R:
+		if banner_mode and event.keycode == KEY_P:
+			save_banner_shot()
+		elif event.keycode == KEY_R:
 			get_tree().reload_current_scene()
 		else:
 			var target := -1

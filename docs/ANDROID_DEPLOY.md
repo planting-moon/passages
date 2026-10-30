@@ -8,7 +8,7 @@ Deploy to an Android device
 2. Configure Editor Settings → Export → Android with your Android SDK path and debug keystore.
 3. Enable Developer options + USB debugging on the phone, plug it in, and confirm adb devices sees it.
 4. In Godot: Project → Export → Add → Android, set the package name (e.g. tools.freesurf.passages) and orientation.
-5. Use the Android one-click deploy button in the editor, or export a debug APK and adb install -r passages.apk.
+5. Use the Android one-click deploy button in the editor, or export a debug APK and adb install -r Hallways.apk.
 
 ## Play testing
 - Create the app in Play Console.
@@ -33,7 +33,7 @@ Deploy to an Android device
 4. Create the Android export preset
 - Project → Export → Add → Android
 - Package unique name: tools.freesurf.passages
-- Package name: Passages
+- Package name: Hallways
 - Version code: 1
 - Version name: 0.1.0
 - Orientation: Portrait
