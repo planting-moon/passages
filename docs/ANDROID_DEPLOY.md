@@ -36,7 +36,7 @@ Deploy to an Android device
 - Package name: Hallways
 - Version code: 1
 - Version name: 0.1.0
-- Orientation: Portrait
+- Orientation: Sensor Landscape (set in Project Settings; portrait is a switch in the in-game menu)
 - Use the debug keystore above for testing.
 5. Enable USB debugging on your phone
 - Settings → About phone → tap Build number 7 times

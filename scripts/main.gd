@@ -17,6 +17,19 @@ const ERASE_FALLBACK_RANGE := 4.0
 const MIRROR_SHADER := preload("res://shaders/mirror.gdshader")
 const MIRROR_BOUNCES := 6
 const BANNER_SIZE := Vector2i(1024, 500)
+# Landscape is the default; portrait is a menu switch for vertical video.
+const SETTINGS_PATH := "user://settings.cfg"
+const LANDSCAPE_DESIGN_SIZE := Vector2i(1280, 720)
+const PORTRAIT_DESIGN_SIZE := Vector2i(720, 1280)
+const PORTRAIT_WINDOW_SIZE := Vector2i(405, 720)
+# 72 degrees of width would feel cramped at 16:9, and the floor chalk has to land
+# inside the shorter frame.
+const LANDSCAPE_FOV := 90.0
+const PORTRAIT_FOV := 72.0
+const LANDSCAPE_CHALK_FLOOR_REACH := 3.0
+const PORTRAIT_CHALK_FLOOR_REACH := 2.2
+# --landscape desktop footage mode.
+const FOOTAGE_SIZE := Vector2i(1920, 1080)
 # Matches the chalk arrays in shaders/mirror.gdshader; older marks stop reflecting.
 const MIRROR_CHALK_LIMIT := 32
 const DOORWAY_SHADER := preload("res://shaders/light_doorway.gdshader")
@@ -221,6 +234,8 @@ var hud: Label
 var status: Label
 var won := false
 var banner_mode := false
+var landscape_mode := true
+var orientation_button: Button
 var current_level := 0
 var current_layout: Array = []
 var current_theme: Dictionary = {}
@@ -262,10 +277,16 @@ func _ready() -> void:
 	if "--peek-exit" in OS.get_cmdline_user_args():
 		peek_exit()
 	build_ui()
+	var settings := ConfigFile.new()
+	settings.load(SETTINGS_PATH)
+	landscape_mode = settings.get_value("display", "landscape", true)
+	apply_orientation()
 	fade_in()
 	match_menu_icon_to_backdrop()
 	if "--banner" in OS.get_cmdline_user_args():
 		enter_banner_mode()
+	if "--landscape" in OS.get_cmdline_user_args():
+		enter_landscape_mode()
 
 func _process(delta: float) -> void:
 	if is_instance_valid(portal_node) and not won:
@@ -872,6 +893,52 @@ func enter_banner_mode() -> void:
 	banner_mode = true
 	DisplayServer.window_set_size(BANNER_SIZE)
 	player.camera.fov = 80.0
+	hide_controls()
+
+# Rotates the game in place, so switching keeps the current maze.
+func apply_orientation() -> void:
+	get_window().content_scale_size = LANDSCAPE_DESIGN_SIZE if landscape_mode else PORTRAIT_DESIGN_SIZE
+	DisplayServer.screen_set_orientation(DisplayServer.SCREEN_SENSOR_LANDSCAPE if landscape_mode else DisplayServer.SCREEN_PORTRAIT)
+	if not OS.has_feature("mobile") and Engine.get_write_movie_path().is_empty():
+		DisplayServer.window_set_size(LANDSCAPE_DESIGN_SIZE if landscape_mode else PORTRAIT_WINDOW_SIZE)
+	player.camera.fov = LANDSCAPE_FOV if landscape_mode else PORTRAIT_FOV
+	# Left thumb when sideways, centred for one-handed portrait play.
+	joystick.anchor_left = 0.0 if landscape_mode else 0.5
+	joystick.anchor_right = joystick.anchor_left
+	joystick.offset_left = 40 if landscape_mode else -140
+	joystick.offset_right = 320 if landscape_mode else 140
+	joystick.offset_top = -320 if landscape_mode else -340
+	joystick.offset_bottom = -40 if landscape_mode else -60
+	orientation_button.text = "Switch to portrait" if landscape_mode else "Switch to landscape"
+	resize_world()
+
+func _on_orientation_pressed() -> void:
+	landscape_mode = not landscape_mode
+	var settings := ConfigFile.new()
+	settings.load(SETTINGS_PATH)
+	settings.set_value("display", "landscape", landscape_mode)
+	settings.save(SETTINGS_PATH)
+	apply_orientation()
+	close_menu()
+
+# Dev helper: fullscreen 16:9 desktop footage, keyboard only. C chalks, E erases.
+func enter_landscape_mode() -> void:
+	landscape_mode = true
+	apply_orientation()
+	DisplayServer.window_set_size(FOOTAGE_SIZE)
+	# Fullscreen on the widest monitor, in case the primary one is rotated.
+	var widest := 0
+	for screen in range(DisplayServer.get_screen_count()):
+		if DisplayServer.screen_get_size(screen).x > DisplayServer.screen_get_size(widest).x:
+			widest = screen
+	DisplayServer.window_set_current_screen(widest)
+	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+	DisplayServer.window_move_to_foreground()
+	hide_controls()
+	# Otherwise clicks on the invisible ring would still steer the player.
+	joystick.set_process_input(false)
+
+func hide_controls() -> void:
 	for control: Control in [hud, menu_button, chalk_button, eraser_button, joystick]:
 		control.visible = false
 
@@ -962,14 +1029,8 @@ func build_ui() -> void:
 	eraser_button.pressed.connect(_on_eraser_pressed)
 	canvas.add_child(eraser_button)
 	joystick = JOYSTICK_SCENE.instantiate()
-	joystick.anchor_left = 0.5
-	joystick.anchor_right = 0.5
 	joystick.anchor_top = 1.0
 	joystick.anchor_bottom = 1.0
-	joystick.offset_left = -140
-	joystick.offset_right = 140
-	joystick.offset_top = -340
-	joystick.offset_bottom = -60
 	canvas.add_child(joystick)
 	joystick.value_changed.connect(player.set_move_input)
 	player.started_moving.connect(_on_player_started_moving)
@@ -1021,6 +1082,11 @@ func build_ui() -> void:
 	select_level_button.add_theme_font_size_override("font_size", 18)
 	select_level_button.pressed.connect(open_level_select)
 	vbox.add_child(select_level_button)
+	orientation_button = Button.new()
+	orientation_button.custom_minimum_size = Vector2(0, 48)
+	orientation_button.add_theme_font_size_override("font_size", 18)
+	orientation_button.pressed.connect(_on_orientation_pressed)
+	vbox.add_child(orientation_button)
 	var restart_level_button := Button.new()
 	restart_level_button.text = "Restart level"
 	restart_level_button.custom_minimum_size = Vector2(0, 48)
@@ -1198,8 +1264,9 @@ func chalk_target() -> Dictionary:
 		# No wall within reach: mark the floor just ahead instead.
 		var forward := -player.global_transform.basis.z
 		forward.y = 0.0
-		# 2.2m is as close as it can land while staying clear of the joystick.
-		var ahead := player.global_position + forward.normalized() * 2.2
+		# Portrait: 2.2m is as close as it can land while staying clear of the joystick.
+		var reach := LANDSCAPE_CHALK_FLOOR_REACH if landscape_mode else PORTRAIT_CHALK_FLOOR_REACH
+		var ahead := player.global_position + forward.normalized() * reach
 		var down := PhysicsRayQueryParameters3D.create(ahead + Vector3.UP, ahead + Vector3.DOWN, 0xFFFFFFFF, [player.get_rid()])
 		hit = space.intersect_ray(down)
 	return hit
@@ -1288,6 +1355,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if banner_mode and event.keycode == KEY_P:
 			save_banner_shot()
+		elif landscape_mode and event.keycode == KEY_C:
+			_on_chalk_pressed()
+		elif landscape_mode and event.keycode == KEY_E:
+			_on_eraser_pressed()
 		elif event.keycode == KEY_R:
 			get_tree().reload_current_scene()
 		else:
